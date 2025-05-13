@@ -32,7 +32,7 @@ jobs:
   lint:
     name: Lint
     needs: build-python
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     steps:
       - name: Download pre-built packages
         uses: actions/download-artifact@v4
@@ -86,7 +86,7 @@ jobs:
   test-python:
     name: "Test Python ${{ matrix.python-version }} + Pydantic v${{ matrix.pydantic }}"
     needs: build-python
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
