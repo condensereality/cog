@@ -13,7 +13,7 @@ import (
 func NewRootCommand() (*cobra.Command, error) {
 	rootCmd := cobra.Command{
 		Use:   "cog",
-		Short: "Cog: Containers for machine learning",
+		Short: "Cog: Containers for machine learning (Condense internal build)",
 		Long: `Containers for machine learning.
 
 To get started, take a look at the documentation:
