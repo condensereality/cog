@@ -7,7 +7,7 @@ on:
       - main
       - condense-main
     tags:
-      - "v*+condense.*"  # Actually needs to be PEP 440 compliant eg v0.14.10+condense.002
+      - "v*"  # Trigger on all tags; filtered later in workflow
   pull_request:
   workflow_dispatch:
 
@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # needed for setuptools_scm version determination
+          fetch-depth: 0
       - uses: hynek/build-and-inspect-python-package@v2
         id: baipp
     outputs:
@@ -66,13 +66,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # https://docs.github.com/en/free-pro-team@latest/actions/reference/specifications-for-github-hosted-runners#supported-runners-and-hardware-resources
         platform: [ubuntu-latest]
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # needed for goreleaser version determination
+          fetch-depth: 0
       - name: Download pre-built packages
         uses: actions/download-artifact@v4
         with:
@@ -121,49 +120,17 @@ jobs:
       - name: Test
         run: python -Im tox run --installpkg "$COG_WHEEL" -e ${{ env.TOX_PYTHON }}-pydantic${{ matrix.pydantic }}-tests
 
-  # cannot run this on mac due to licensing issues: https://github.com/actions/virtual-environments/issues/2150
-  # For expediency, we're not running this on CI - we'll rely on upstream.
-  # test-integration:
-  #   name: "Test integration"
-  #   needs: build-python
-  #   runs-on: ubuntu-latest
-  #   timeout-minutes: 20
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         fetch-depth: 0 # needed for goreleaser version determination
-  #     - name: Download pre-built packages
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         name: Packages
-  #         path: dist
-  #     - name: Set COG_WHEEL
-  #       run: echo COG_WHEEL=$(ls dist/*.whl) >>"$GITHUB_ENV"
-  #     - uses: actions/setup-go@v5
-  #       with:
-  #         go-version-file: go.mod
-  #     - uses: actions/setup-python@v5
-  #       with:
-  #         python-version: 3.12
-  #     - uses: hynek/setup-cached-uv@v2
-  #     - name: Prepare tox
-  #       run: uv pip install --system tox tox-uv
-  #     - name: Test
-  #       run: make test-integration
-  #       env:
-  #         R8_COGLET_VERSION: coglet==0.1.0-alpha17
-
   release:
     name: "Release"
     needs:
       - test-go
       - test-python
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/v')  # Must be PEP 440 compliant eg v0.14.10+condense.002
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # needed for goreleaser version determination
+          fetch-depth: 0
       - name: Download pre-built packages
         uses: actions/download-artifact@v4
         with:
