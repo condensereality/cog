@@ -16,7 +16,9 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_NO_PYTHON_VERSION_WARNING: "1"
 
-permissions: {}
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build-python:
@@ -156,8 +158,6 @@ jobs:
       - test-go
       - test-python
     if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
