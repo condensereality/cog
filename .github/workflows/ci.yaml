@@ -3,7 +3,9 @@ name: CI
 on:
   merge_group:
   push:
-    branches: [main]
+    branches:
+      - main
+      - condense-main
     tags: ["v[0-9]+.[0-9]+.[0-9]+\\+condense.[0-9]+(\\+dev.[0-9]+)?"]
   pull_request:
   workflow_dispatch:
