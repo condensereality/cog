@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,14 +10,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"sort"
 	"strings"
 
+	"github.com/creack/pty"
 	"github.com/docker/cli/cli/config"
 	"github.com/docker/cli/cli/config/configfile"
 	"github.com/docker/cli/cli/config/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/mattn/go-isatty"
 
 	"github.com/replicate/cog/pkg/docker/command"
 	"github.com/replicate/cog/pkg/util"
@@ -53,7 +56,7 @@ func (c *DockerCommand) Pull(ctx context.Context, image string, force bool) (*im
 		"--platform", "linux/amd64",
 	}
 
-	err := c.exec(ctx, nil, nil, "", args)
+	err := c.exec(ctx, nil, nil, nil, "", args)
 	if err != nil {
 		// A "not found" error message will be different depending on what flavor of engine and
 		// registry version we're hitting. This checks for both docker and OCI lingo.
@@ -74,7 +77,7 @@ func (c *DockerCommand) Pull(ctx context.Context, image string, force bool) (*im
 func (c *DockerCommand) Push(ctx context.Context, image string) error {
 	console.Debugf("=== DockerCommand.Push %s", image)
 
-	return c.exec(ctx, nil, nil, "", []string{"push", image})
+	return c.exec(ctx, nil, nil, nil, "", []string{"push", image})
 }
 
 func (c *DockerCommand) LoadUserInformation(ctx context.Context, registryHost string) (*command.UserInfo, error) {
@@ -118,7 +121,7 @@ func (c *DockerCommand) CreateTarFile(ctx context.Context, image string, tmpDir 
 		"/",
 		folder,
 	}
-	if err := c.exec(ctx, nil, nil, "", args); err != nil {
+	if err := c.exec(ctx, nil, nil, nil, "", args); err != nil {
 		return "", err
 	}
 	return filepath.Join(tmpDir, tarFile), nil
@@ -143,7 +146,7 @@ func (c *DockerCommand) CreateAptTarFile(ctx context.Context, tmpDir string, apt
 		"/buildtmp/" + aptTarFile,
 	}
 	args = append(args, packages...)
-	if err := c.exec(ctx, nil, nil, "", args); err != nil {
+	if err := c.exec(ctx, nil, nil, nil, "", args); err != nil {
 		return "", err
 	}
 
@@ -204,7 +207,7 @@ func (c *DockerCommand) ContainerLogs(ctx context.Context, containerID string, w
 		"--follow",
 	}
 
-	return c.exec(ctx, nil, w, "", args)
+	return c.exec(ctx, nil, w, nil, "", args)
 }
 
 func (c *DockerCommand) ContainerInspect(ctx context.Context, id string) (*container.InspectResponse, error) {
@@ -241,11 +244,11 @@ func (c *DockerCommand) ContainerStop(ctx context.Context, containerID string) e
 	args := []string{
 		"container",
 		"stop",
-		"--time", "3",
+		"--timeout", "3",
 		containerID,
 	}
 
-	if err := c.exec(ctx, nil, nil, "", args); err != nil {
+	if err := c.exec(ctx, nil, nil, nil, "", args); err != nil {
 		if strings.Contains(err.Error(), "No such container") {
 			err = &command.NotFoundError{Object: "container", Ref: containerID}
 		}
@@ -258,6 +261,15 @@ func (c *DockerCommand) ContainerStop(ctx context.Context, containerID string) e
 func (c *DockerCommand) ImageBuild(ctx context.Context, options command.ImageBuildOptions) error {
 	console.Debugf("=== DockerCommand.ImageBuild %s", options.ImageName)
 
+	args := c.imageBuildArgs(options)
+
+	in := strings.NewReader(options.DockerfileContents)
+
+	return c.exec(ctx, in, nil, nil, options.WorkingDir, args)
+}
+
+// imageBuildArgs builds a string slice of arguments that will be provided to the `docker` command.
+func (c *DockerCommand) imageBuildArgs(options command.ImageBuildOptions) []string {
 	args := []string{
 		"buildx", "build",
 		// disable provenance attestations since we don't want them cluttering the registry
@@ -265,14 +277,8 @@ func (c *DockerCommand) ImageBuild(ctx context.Context, options command.ImageBui
 		// Fixes "WARNING: The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8) and no specific platform was requested"
 		// We do this regardless of the host platform so windows/*. linux/arm64, etc work as well
 		"--platform", "linux/amd64",
-	}
-
-	if util.IsAppleSiliconMac(runtime.GOOS, runtime.GOARCH) {
-		args = append(args,
-			// buildx doesn't load images by default, so we tell it to load here. _however_, the
-			// --output type=docker,rewrite-timestamp=true flag also loads the image, this may not be necessary
-			"--load",
-		)
+		// Ensure that the resultant image is loaded into docker
+		"--load",
 	}
 
 	for _, secret := range options.Secrets {
@@ -283,7 +289,14 @@ func (c *DockerCommand) ImageBuild(ctx context.Context, options command.ImageBui
 		args = append(args, "--no-cache")
 	}
 
-	for k, v := range options.Labels {
+	// Sort label keys for deterministic order
+	labelKeys := make([]string, 0, len(options.Labels))
+	for k := range options.Labels {
+		labelKeys = append(labelKeys, k)
+	}
+	sort.Strings(labelKeys)
+	for _, k := range labelKeys {
+		v := options.Labels[k]
 		// Unlike in Dockerfiles, the value here does not need quoting -- Docker merely
 		// splits on the first '=' in the argument and the rest is the label value.
 		args = append(args, "--label", fmt.Sprintf(`%s=%s`, k, v))
@@ -294,9 +307,9 @@ func (c *DockerCommand) ImageBuild(ctx context.Context, options command.ImageBui
 	// equivalent to `--output type=docker`
 	if options.Epoch != nil && *options.Epoch >= 0 {
 		args = append(args,
-			"--build-arg", fmt.Sprintf("SOURCE_DATE_EPOCH=%d", options.Epoch),
+			"--build-arg", fmt.Sprintf("SOURCE_DATE_EPOCH=%d", *options.Epoch),
 			"--output", "type=docker,rewrite-timestamp=true")
-		console.Infof("Forcing timestamp rewriting to epoch %d", options.Epoch)
+		console.Infof("Forcing timestamp rewriting to epoch %d", *options.Epoch)
 	}
 
 	if cogconfig.BuildXCachePath != "" {
@@ -309,8 +322,15 @@ func (c *DockerCommand) ImageBuild(ctx context.Context, options command.ImageBui
 		args = append(args, "--cache-to", "type=inline")
 	}
 
-	for name, dir := range options.BuildContexts {
-		args = append(args, "--build-context", name+"="+dir)
+	// Sort build context keys for deterministic order
+	contextKeys := make([]string, 0, len(options.BuildContexts))
+	for k := range options.BuildContexts {
+		contextKeys = append(contextKeys, k)
+	}
+	sort.Strings(contextKeys)
+	for _, k := range contextKeys {
+		dir := options.BuildContexts[k]
+		args = append(args, "--build-context", k+"="+dir)
 	}
 
 	if options.ProgressOutput != "" {
@@ -327,47 +347,171 @@ func (c *DockerCommand) ImageBuild(ctx context.Context, options command.ImageBui
 		"--tag", options.ImageName,
 		options.ContextDir,
 	)
-
-	in := strings.NewReader(options.DockerfileContents)
-
-	return c.exec(ctx, in, nil, options.WorkingDir, args)
+	return args
 }
 
-func (c *DockerCommand) exec(ctx context.Context, in io.Reader, out io.Writer, dir string, args []string) error {
-	dockerCmd := DockerCommandFromEnvironment()
-	cmd := exec.CommandContext(ctx, dockerCmd, args...)
+func (c *DockerCommand) ContainerStart(ctx context.Context, options command.RunOptions) (string, error) {
+	console.Debugf("=== DockerCommand.ContainerStart %s %v", options.Image, options.Args)
 
-	if out == nil {
-		out = os.Stderr
+	var out bytes.Buffer
+	options.Stdout = &out
+	options.Detach = true
+
+	if err := c.containerRun(ctx, options); err != nil {
+		return "", err
 	}
 
-	// the ring buffer captures the last N bytes written to `w` so we have some context to return in an error
-	errbuf := util.NewRingBufferWriter(out, 1024)
-	cmd.Stdout = errbuf
-	cmd.Stderr = errbuf
+	return out.String(), nil
+}
+
+func (c *DockerCommand) Run(ctx context.Context, options command.RunOptions) error {
+	console.Debugf("=== DockerCommand.Run %s %v", options.Image, options.Args)
+	if options.Stdout == nil {
+		options.Stdout = os.Stdout
+	}
+	if options.Stderr == nil {
+		options.Stderr = os.Stderr
+	}
+
+	return c.containerRun(ctx, options)
+}
+
+func (c *DockerCommand) containerRun(ctx context.Context, options command.RunOptions) error {
+	console.Debugf("=== DockerCommand.containerRun %s", options.Image)
+
+	var isInteractive, isTTY bool
+	if options.Stdin != nil {
+		isInteractive = true
+		if f, ok := options.Stdin.(*os.File); ok {
+			isTTY = isatty.IsTerminal(f.Fd())
+		}
+	}
+
+	args := []string{
+		"run",
+		"--rm",
+		// https://github.com/pytorch/pytorch/issues/2244
+		// https://github.com/replicate/cog/issues/1293
+		"--shm-size", "6G",
+		// force platform to linux/amd64
+		"--platform", "linux/amd64",
+	}
+
+	for _, env := range options.Env {
+		args = append(args, "--env", env)
+	}
+
+	if options.Detach {
+		args = append(args, "--detach")
+	}
+
+	if options.GPUs != "" {
+		args = append(args, "--gpus", options.GPUs)
+	}
+	if isInteractive {
+		args = append(args, "--interactive")
+	}
+	for _, port := range options.Ports {
+		args = append(args, "--publish", fmt.Sprintf("%d:%d", port.HostPort, port.ContainerPort))
+	}
+	if isTTY {
+		args = append(args, "--tty")
+	}
+	for _, volume := range options.Volumes {
+		// This needs escaping if we want to support commas in filenames
+		// https://github.com/moby/moby/issues/8604
+		args = append(args, "--mount", "type=bind,source="+volume.Source+",destination="+volume.Destination)
+	}
+	if options.Workdir != "" {
+		args = append(args, "--workdir", options.Workdir)
+	}
+
+	args = append(args, options.Image)
+	args = append(args, options.Args...)
+
+	err := c.exec(ctx, options.Stdin, options.Stdout, options.Stderr, "", args)
+	if err != nil {
+		if strings.Contains(err.Error(), "could not select device driver") || strings.Contains(err.Error(), "nvidia-container-cli: initialization error") {
+			return ErrMissingDeviceDriver
+		}
+		return err
+	}
+	return nil
+}
+
+func (c *DockerCommand) exec(ctx context.Context, in io.Reader, outw, errw io.Writer, dir string, args []string) error {
+	if outw == nil {
+		outw = os.Stderr
+	}
+	if errw == nil {
+		errw = os.Stderr
+	}
+
+	dockerCmd := DockerCommandFromEnvironment()
+	cmd := exec.CommandContext(ctx, dockerCmd, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+
+	// setup stderr buffer & writer to errw and buffer
+	var stderrBuf bytes.Buffer
+
+	// if errw is a TTY, use a pty for stderr output so that the child process will properly detect an interactive console
+	if f, ok := errw.(*os.File); ok && console.IsTTY(f) {
+		stderrpty, stderrtty, err := pty.Open()
+		if err != nil {
+			return fmt.Errorf("failed to open stderr pty: %w", err)
+		}
+		cmd.Stderr = stderrtty
+
+		go func() {
+			defer stderrpty.Close()
+			defer stderrtty.Close()
+
+			_, err = io.Copy(io.MultiWriter(
+				errw,
+				util.NewRingBufferWriter(&stderrBuf, 1024),
+			), stderrpty)
+			if err != nil {
+				console.Errorf("failed to copy stderr pty to errw: %s", err)
+			}
+		}()
+	} else {
+		cmd.Stderr = io.MultiWriter(errw, util.NewRingBufferWriter(&stderrBuf, 1024))
+	}
+
+	// setup stdout pipe
+	outpipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+	// copy stdout to outw
+	go func() {
+		defer outpipe.Close()
+
+		_, err = io.Copy(outw, outpipe)
+		if err != nil {
+			console.Errorf("failed to copy stdout to outw: %s", err)
+		}
+	}()
 
 	if in != nil {
 		cmd.Stdin = in
 	}
 
-	if dir != "" {
-		cmd.Dir = dir
-	}
-
 	console.Debug("$ " + strings.Join(cmd.Args, " "))
-	err := cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return err
 		}
-		return fmt.Errorf("command failed: %s: %w", errbuf.String(), err)
+		return fmt.Errorf("command failed: %s: %w", stderrBuf.String(), err)
 	}
 	return nil
 }
 
 func (c *DockerCommand) execCaptured(ctx context.Context, in io.Reader, dir string, args []string) (string, error) {
 	var out strings.Builder
-	err := c.exec(ctx, in, &out, dir, args)
+	err := c.exec(ctx, in, &out, nil, dir, args)
 	if err != nil {
 		return "", err
 	}
