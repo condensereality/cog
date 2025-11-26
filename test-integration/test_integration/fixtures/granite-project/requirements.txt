@@ -298,7 +298,7 @@ pyyaml==6.0.2
     #   vllm
 pyzmq==26.4.0
     # via vllm
-ray==2.43.0
+ray==2.52.0
     # via vllm
 referencing==0.36.2
     # via
