@@ -333,7 +333,7 @@ safetensors==0.5.3
     # via transformers
 scipy==1.15.2
     # via vllm
-sentencepiece==0.2.0
+sentencepiece==0.2.1
     # via
     #   mistral-common
     #   vllm
