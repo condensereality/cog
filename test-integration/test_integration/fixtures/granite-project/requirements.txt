@@ -284,7 +284,7 @@ python-dotenv==1.1.0
     # via uvicorn
 python-json-logger==3.3.0
     # via vllm
-python-multipart==0.0.20
+python-multipart==0.0.22
     # via fastapi
 pyyaml==6.0.2
     # via
