@@ -240,7 +240,7 @@ packaging==24.2
     #   transformers
 partial-json-parser==0.2.1.1.post5
     # via vllm
-pillow==11.1.0
+pillow==12.1.1
     # via
     #   mistral-common
     #   torchvision
